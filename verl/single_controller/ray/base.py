@@ -440,7 +440,8 @@ def _unwrap_ray_remote(cls):
 def create_colocated_worker_cls(class_dict: dict[str, RayClassWithInitArgs]):
     """
     This function should return a class instance that delegates the calls to every 
-    cls in cls_dict
+    cls in cls_dict 
+    {'actor_rollout : actor_rollout_cls, 'critic': critic_cls,'rm':rm_cls,'ref :ref_cls}
     """
     cls_dict = {}
     init_args_dict = {}

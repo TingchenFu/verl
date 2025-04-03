@@ -594,6 +594,7 @@ class RayPPOTrainer(object):
         self.resource_pool_manager.create_resource_pool()
 
         self.resource_pool_to_cls = {pool: {} for pool in self.resource_pool_manager.resource_pool_dict.values()}
+        # self.resource_pool_to_cls = {global_pool_id: {}}
 
         # create actor and rollout
         if self.hybrid_engine:
@@ -625,6 +626,8 @@ class RayPPOTrainer(object):
             resource_pool = self.resource_pool_manager.get_resource_pool(Role.RewardModel)
             rm_cls = RayClassWithInitArgs(self.role_worker_mapping[Role.RewardModel], config=self.config.reward_model)
             self.resource_pool_to_cls[resource_pool]['rm'] = rm_cls
+
+        #self.resource_pool_to_cls = {global_pool_id: {'actor_rollout : actor_rollout_cls, 'critic': critic_cls,'rm':rm_cls,'ref :ref_cls}}
 
         # initialize WorkerGroup
         # NOTE: if you want to use a different resource pool for each role, which can support different parallel size,
