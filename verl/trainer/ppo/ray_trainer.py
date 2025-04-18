@@ -181,7 +181,7 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         advantages, returns = core_algos.compute_gae_advantage_return(
             token_level_rewards=data.batch['token_level_rewards'],
             values=data.batch['values'],
-            response_mask=data.batch['response_mask'],
+            eos_mask=data.batch['response_mask'],
             gamma=gamma,
             lam=lam)
         data.batch['advantages'] = advantages
@@ -189,29 +189,27 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
     elif adv_estimator == AdvantageEstimator.GRPO:
         advantages, returns = core_algos.compute_grpo_outcome_advantage(
             token_level_rewards=data.batch['token_level_rewards'],
-            response_mask=data.batch['response_mask'],
+            eos_mask=data.batch['response_mask'],
             index=data.non_tensor_batch['uid'])
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
     elif adv_estimator == AdvantageEstimator.REINFORCE_PLUS_PLUS:
         advantages, returns = core_algos.compute_reinforce_plus_plus_outcome_advantage(
-            token_level_rewards=data.batch['token_level_rewards'],
-            response_mask=data.batch['response_mask'],
-            gamma=gamma)
+            token_level_rewards=data.batch['token_level_rewards'], eos_mask=data.batch['response_mask'], gamma=gamma)
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
     elif adv_estimator == AdvantageEstimator.REMAX:
         advantages, returns = core_algos.compute_remax_outcome_advantage(
             token_level_rewards=data.batch['token_level_rewards'],
             reward_baselines=data.batch['reward_baselines'],
-            response_mask=data.batch['response_mask'])
+            eos_mask=data.batch['response_mask'])
 
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
     elif adv_estimator == AdvantageEstimator.RLOO:
         advantages, returns = core_algos.compute_rloo_outcome_advantage(
             token_level_rewards=data.batch['token_level_rewards'],
-            response_mask=data.batch['response_mask'],
+            eos_mask=data.batch['response_mask'],
             index=data.non_tensor_batch['uid'])
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
@@ -498,6 +496,7 @@ class RayPPOTrainer(object):
         sample_inputs = []
         sample_outputs = []
         sample_scores = []
+        sample_lengths = []
 
         for test_data in self.val_dataloader:
             test_batch = DataProto.from_single_dict(test_data)
@@ -545,9 +544,12 @@ class RayPPOTrainer(object):
 
             # Store generated outputs
             output_ids = test_output_gen_batch.batch['responses']
+
             output_texts = [self.tokenizer.decode(ids, skip_special_tokens=True) for ids in output_ids]
             sample_outputs.extend(output_texts)
 
+            output_lengths = [torch.sum(ids != self.tokenizer.pad_token_id)  for ids in output_ids]
+            sample_lengths.extend(output_lengths)
             test_batch = test_batch.union(test_output_gen_batch)
 
             # evaluate using reward_function
@@ -573,9 +575,18 @@ class RayPPOTrainer(object):
                 data_source_reward[data_source] = []
             data_source_reward[data_source].append(reward_tensor[i].item())
 
+        data_source_length = {}
+        for i in range(len(sample_lengths)):
+            data_source = data_sources[i]
+            if data_source not in data_source_length:
+                data_source_length[data_source] = []
+            data_source_length[data_source].append(sample_lengths[i])
+
         metric_dict = {}
         for data_source, rewards in data_source_reward.items():
             metric_dict[f'val/test_score/{data_source}'] = np.mean(rewards)
+        for data_source, lengths in data_source_length.items():
+            metric_dict[f'val/test_length/{data_source}'] = np.mean(lengths)
 
         return metric_dict
 
@@ -584,7 +595,6 @@ class RayPPOTrainer(object):
         self.resource_pool_manager.create_resource_pool()
 
         self.resource_pool_to_cls = {pool: {} for pool in self.resource_pool_manager.resource_pool_dict.values()}
-        # self.resource_pool_to_cls = {global_pool_id: {}}
 
         # create actor and rollout
         if self.hybrid_engine:
@@ -616,8 +626,6 @@ class RayPPOTrainer(object):
             resource_pool = self.resource_pool_manager.get_resource_pool(Role.RewardModel)
             rm_cls = RayClassWithInitArgs(self.role_worker_mapping[Role.RewardModel], config=self.config.reward_model)
             self.resource_pool_to_cls[resource_pool]['rm'] = rm_cls
-
-        #self.resource_pool_to_cls = {global_pool_id: {'actor_rollout : actor_rollout_cls, 'critic': critic_cls,'rm':rm_cls,'ref :ref_cls}}
 
         # initialize WorkerGroup
         # NOTE: if you want to use a different resource pool for each role, which can support different parallel size,
@@ -685,9 +693,9 @@ class RayPPOTrainer(object):
                                            max_ckpt_to_keep=max_critic_ckpt_to_keep)
 
         # save dataloader
-        dataloader_local_path = os.path.join(local_global_step_folder, 'data.pt')
-        dataloader_state_dict = self.train_dataloader.state_dict()
-        torch.save(dataloader_state_dict, dataloader_local_path)
+        # dataloader_local_path = os.path.join(local_global_step_folder, 'data.pt')
+        # dataloader_state_dict = self.train_dataloader.state_dict()
+        # torch.save(dataloader_state_dict, dataloader_local_path)
 
         # latest checkpointed iteration tracker (for atomic usage)
         local_latest_checkpointed_iteration = os.path.join(self.config.trainer.default_local_dir,
@@ -712,7 +720,7 @@ class RayPPOTrainer(object):
         # find global_step_folder
         if self.config.trainer.resume_mode == 'auto':
             if global_step_folder is None:
-                print('Training from scratch')
+                print('Training from scratch') # it means training from pretrained_model but not literally ``from scratch''
                 return 0
         else:
             if self.config.trainer.resume_mode == "resume_path":
